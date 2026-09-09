@@ -1,0 +1,1258 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Dashboard MSU WEB V.2</title>
+
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <!-- React & Babel for Single File App -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <!-- Chart.js -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+  <!-- Marked.js for Markdown Rendering in AI Insights -->
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+
+  <!-- Google Font: Inter -->
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+
+  <style>
+    body {
+      font-family: 'Inter', sans-serif;
+      background-color: #f8fafc;
+      color: #0f172a;
+    }
+    .glass-card {
+      background: rgba(255, 255, 255, 0.95);
+      backdrop-filter: blur(12px);
+      border: 1px solid #e2e8f0;
+      box-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.05);
+    }
+    .gradient-blue {
+      background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
+    }
+    .animate-fade-in {
+      animation: fadeIn 0.3s ease-out forwards;
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(6px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    /* Custom Scrollbar */
+    ::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    ::-webkit-scrollbar-track {
+      background: #f1f5f9;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: #cbd5e1;
+      border-radius: 4px;
+    }
+  </style>
+</head>
+<body class="min-h-screen antialiased">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useMemo, useRef } = React;
+
+    const ChartCanvas = ({ config }) => {
+      const canvasRef = useRef(null);
+      const chartInstanceRef = useRef(null);
+
+      useEffect(() => {
+        if (!canvasRef.current) return;
+        if (chartInstanceRef.current) {
+          chartInstanceRef.current.destroy();
+        }
+        const ctx = canvasRef.current.getContext('2d');
+        chartInstanceRef.current = new Chart(ctx, config);
+
+        return () => {
+          if (chartInstanceRef.current) {
+            chartInstanceRef.current.destroy();
+          }
+        };
+      }, [config]);
+
+      return <canvas ref={canvasRef} />;
+    };
+
+    const SPREADSHEET_ID = '16nhQsQ01U1e6xcTD-Rn4omttp3rG5jL4Ioszl7HpIH8';
+    const MONTH_LIST = ['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'];
+    const AUTO_REFRESH_MS = 30000; // sinkronisasi otomatis setiap 30 detik
+    const SHEET_NAMES = ['PPI', 'ANGGARAN PPI', 'ANGGARAN PPI SUMMARY', 'PKU', 'ANGGARAN PKU', 'SDO', 'LPJ'];
+
+    const parseNum = (val) => {
+      if (val === null || val === undefined) return 0;
+      if (typeof val === 'number') return isNaN(val) ? 0 : val;
+      let str = val.toString().trim();
+      if (!str) return 0;
+      str = str.replace(/Rp|rp|\s/g, '');
+      if (str.includes('.') && str.includes(',')) {
+        str = str.replace(/\./g, '').replace(',', '.');
+      } else if (str.includes('.') && !str.includes(',')) {
+        if ((str.match(/\./g) || []).length > 1) {
+          str = str.replace(/\./g, '');
+        } else {
+          const parts = str.split('.');
+          if (parts[1] && parts[1].length === 3) str = str.replace(/\./g, '');
+        }
+      } else if (str.includes(',')) {
+        str = str.replace(',', '.');
+      }
+      const num = parseFloat(str);
+      return isNaN(num) ? 0 : num;
+    };
+
+    const formatCurrency = (val) => {
+      const num = parseNum(val);
+      return new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', maximumFractionDigits: 0 }).format(num);
+    };
+
+    const formatNum = (val) => {
+      return new Intl.NumberFormat('id-ID').format(parseNum(val));
+    };
+
+    const getColVal = (row, keyAliases) => {
+      if (!row) return undefined;
+      const keys = Object.keys(row);
+      for (const alias of keyAliases) {
+        const normAlias = alias.replace(/_/g, ' ').trim().toLowerCase();
+        const foundKey = keys.find(k => k.replace(/_/g, ' ').trim().toLowerCase() === normAlias);
+        if (foundKey && row[foundKey] !== undefined && row[foundKey] !== '') {
+          return row[foundKey];
+        }
+      }
+      const nonMonthKey = keys.find(k => {
+        const normK = k.replace(/_/g, ' ').trim().toLowerCase();
+        return !MONTH_LIST.some(m => m.toLowerCase() === normK);
+      });
+      if (nonMonthKey && row[nonMonthKey] !== undefined && row[nonMonthKey] !== '') {
+        return row[nonMonthKey];
+      }
+      return undefined;
+    };
+
+    const getColNum = (row, keyAliases) => {
+      for (const alias of keyAliases) {
+        const keys = Object.keys(row);
+        const normAlias = alias.replace(/_/g, ' ').trim().toLowerCase();
+        const foundKey = keys.find(k => k.replace(/_/g, ' ').trim().toLowerCase() === normAlias);
+        if (foundKey && row[foundKey] !== undefined && row[foundKey] !== '' && row[foundKey] !== null) {
+          const n = parseNum(row[foundKey]);
+          if (n > 0) return n;
+        }
+      }
+      const val = getColVal(row, keyAliases);
+      return parseNum(val);
+    };
+
+    const sumJanToAug = (row, selectedMonth = 'All') => {
+      if (!row) return 0;
+      if (selectedMonth !== 'All') {
+        const aliases = selectedMonth.toLowerCase() === 'september' ? ['September', 'Septembet'] : [selectedMonth];
+        return getColNum(row, aliases);
+      }
+      return MONTH_LIST.reduce((sum, m) => {
+        const aliases = m === 'September' ? ['September', 'Septembet'] : [m];
+        return sum + getColNum(row, aliases);
+      }, 0);
+    };
+
+    const MOCK_DATA = {
+      PPI: [
+        { region: 'REGION 1', januari: 9, februari: 6, maret: 15, april: 19, mei: 24, juni: 17, juli: 28, agustus: 21 },
+        { region: 'REGION 2', januari: 10, februari: 6, maret: 9, april: 9, mei: 11, juni: 17, juli: 8, agustus: 10 },
+        { region: '', januari: '', februari: '', maret: '', april: '', mei: '', juni: '' },
+        { region: '', januari: '', februari: '', maret: '', april: '', mei: '', juni: '' },
+        { region: 'project', januari: 'status', februari: '', maret: '', april: '', mei: '', juni: '' },
+        { region: 'Perbaikan M.Patrol', januari: 'on proses', februari: '', maret: '', april: '', mei: '', juni: '' },
+        { region: 'Perbaikan U.JTBR', januari: 'done', februari: '', maret: '', april: '', mei: '', juni: '' },
+        { region: 'Perbaikan U. MAJA 1', januari: 'done', februari: '', maret: '', april: '', mei: '', juni: '' },
+        { region: 'Perbaikan M.Anjatan', januari: 'menunggu persetujuan', februari: '', maret: '', april: '', mei: '', juni: '' },
+        { region: 'Perbaikan M.Anjatan 2', januari: 'menunggu persetujuan', februari: '', maret: '', april: '', mei: '', juni: '' },
+        { region: 'Perbaikan Cabang 1 (KACA)', januari: 'on proses', februari: '', maret: '', april: '', mei: '', juni: '' },
+        { region: 'Perbaikan Cabang 2 (MURAL)', januari: 'vendor', februari: '', maret: '', april: '', mei: '', juni: '' },
+        { region: 'Perbaikan Gabus Wetan', januari: 'on proses', februari: '', maret: '', april: '', mei: '', juni: '' },
+        { region: 'Renovasi Terisi 1', januari: 'vendor', februari: '', maret: '', april: '', mei: '', juni: '' },
+        { region: 'Renovasi lemah sugih 1', januari: 'vendor', februari: '', maret: '', april: '', mei: '', juni: '' },
+        { region: 'Renovasi Kedokanbunder', januari: 'done', februari: '', maret: '', april: '', mei: '', juni: '' },
+        { region: 'Renovasi sumberjaya', januari: 'done', februari: '', maret: '', april: '', mei: '', juni: '' }
+      ],
+      ANGGARAN_PPI: [
+        { sumber_anggaran: 'REALISASI KP', januari: 290346458, februari: 0, maret: 0, april: 0, mei: 0, juni: 0, juli: 0, agustus: 0, pagu_anggaran_cabang: 516000000, realisasi: 179458475, sisa: 336541525 },
+        { sumber_anggaran: 'REALISASI CABANG', januari: 179458475, februari: 0, maret: 0, april: 0, mei: 0, juni: 0, juli: 0, agustus: 0 },
+        { sumber_anggaran: 'REALISASI UNIT', januari: 42077000, februari: 0, maret: 0, april: 0, mei: 0, juni: 0, juli: 0, agustus: 0 }
+      ],
+      PKU: [
+        { jenis_pelatihan: 'MBAK MAYA', januari: 0, februari: 0, maret: 0, april: 37, mei: 34, juni: 0, juli: 0, agustus: 0 },
+        { jenis_pelatihan: 'MPOK RENA', januari: 0, februari: 69, maret: 67, april: 23, mei: 31, juni: 0, juli: 60, agustus: 0 },
+        { jenis_pelatihan: 'PRA PEMBIAYAAN', januari: 22, februari: 22, maret: 22, april: 22, mei: 22, juni: 22, juli: 22, agustus: 0 },
+        { jenis_pelatihan: 'KOMUNITAS', januari: 11, februari: 11, maret: 10, april: 11, mei: 11, juni: 11, juli: 11, agustus: 0 },
+        { jenis_pelatihan: 'PAMERAN', januari: 0, februari: 0, maret: 1, april: 1, mei: 0, juni: 0, juli: 0, agustus: 0 },
+        { jenis_pelatihan: 'STUDI BANDING', januari: 0, februari: 0, maret: 0, april: 0, mei: 0, juni: 0, juli: 0, agustus: 1 },
+        { jenis_pelatihan: 'WEBINAR', januari: 8, februari: 4, maret: 0, april: 0, mei: 0, juni: 24, juli: 6, agustus: 18 },
+        { jenis_pelatihan: 'GAUN', januari: 0, februari: 10, maret: 0, april: 0, mei: 0, juni: 0, juli: 0, agustus: 0 },
+        { jenis_pelatihan: 'KLASTERISASI', januari: 0, februari: 0, maret: 0, april: 0, mei: 2, juni: 4, juli: 1, agustus: 0 },
+        { jenis_pelatihan: 'LENTERA', januari: 0, februari: 0, maret: 0, april: 0, mei: 0, juni: 4, juli: 0, agustus: 0 }
+      ],
+      ANGGARAN_PKU: [
+        { jenis_pelatihan: 'REALISASI PKU', januari: 720695346, februari: 0, maret: 0, april: 0, mei: 0, juni: 0, juli: 0, agustus: 0 }
+      ],
+      SURVEY_SDO: [
+        { bulan: 'Agustus', ao: 474, sao: 116, kum: 69, kdo: 631, hp: 1113, sdo_rkap: 973, sdo_update: 659, kdo_update: 631, kebutuhan_kdo_rkap: 614, kebutuhan_kdo_update: 364 }
+      ]
+    };
+
+    function App() {
+      const [activeTab, setActiveTab] = useState('overview');
+      const [selectedMonth, setSelectedMonth] = useState('All');
+      const [dataSourceMode, setDataSourceMode] = useState('dynamic'); 
+      const [isLoading, setIsLoading] = useState(false);
+      const [lastUpdated, setLastUpdated] = useState(new Date().toLocaleTimeString('id-ID'));
+      const [data, setData] = useState({ PPI: [], ANGGARAN_PPI: [], ANGGARAN_PPI_SUMMARY: [], PKU: [], ANGGARAN_PKU: [], SURVEY_SDO: [], LPJ: [] });
+      const [apiKey, setApiKey] = useState('');
+      const [aiResponse, setAiResponse] = useState('');
+      const [isAiLoading, setIsAiLoading] = useState(false);
+      const [errorMsg, setErrorMsg] = useState(null);
+      // Cek data mentah yang terbaca untuk keperluan debug
+      // Cari baris yang memiliki informasi pagu atau realisasi anggaran
+      // Ringkasan PPI berasal tepat dari A8:C8 pada sheet ANGGARAN PPI.
+      // Range A7:C8 dibaca terpisah karena Google Sheets CSV hanya mempunyai satu header.
+      const ppiSummaryRow = (data.ANGGARAN_PPI_SUMMARY || [])[0] || {};
+      const totalPagu = getColNum(ppiSummaryRow, ['pagu_anggaran_cabang', 'pagu anggaran cabang', 'pagu']);
+      const totalRealisasi = getColNum(ppiSummaryRow, ['realisasi_anggaran', 'realisasi anggaran', 'realisasi']);
+      const totalSisa = getColNum(ppiSummaryRow, ['sisa_anggaran', 'sisa anggaran', 'sisa']);
+      const finalSisa = totalSisa;
+      const overviewChartConfig = {
+        type: 'doughnut',
+        data: {
+          labels: ['Total Pagu', 'Total Realisasi', 'Sisa Anggaran'],
+          datasets: [{
+            data: [totalPagu, totalRealisasi, finalSisa],
+            backgroundColor: ['#2563eb', '#10b981', '#f59e0b'],
+            borderWidth: 0
+          }]
+        },
+        options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom' } } }
+      };
+
+      const loadData = async (mode = dataSourceMode, silent = false) => {
+        if (!silent) setIsLoading(true);
+        setErrorMsg(null);
+
+        if (mode === 'static') {
+          setData(MOCK_DATA);
+          setLastUpdated(new Date().toLocaleTimeString('id-ID'));
+          setIsLoading(false);
+          return;
+        }
+
+        const parseCSV = (csv) => {
+          const rows = [];
+          let row = [], cell = '', quoted = false;
+          for (let i = 0; i < csv.length; i++) {
+            const ch = csv[i], next = csv[i + 1];
+            if (ch === '"' && quoted && next === '"') { cell += '"'; i++; continue; }
+            if (ch === '"') { quoted = !quoted; continue; }
+            if (ch === ',' && !quoted) { row.push(cell.trim()); cell = ''; continue; }
+            if ((ch === '\n' || ch === '\r') && !quoted) {
+              if (ch === '\r' && next === '\n') i++;
+              row.push(cell.trim()); cell = '';
+              if (row.some(v => v !== '')) rows.push(row);
+              row = [];
+              continue;
+            }
+            cell += ch;
+          }
+          row.push(cell.trim());
+          if (row.some(v => v !== '')) rows.push(row);
+          return rows;
+        };
+
+        const fetchSheet = async (sheetName, range = null) => {
+          const rangeParam = range ? `&range=${encodeURIComponent(range)}` : '';
+          const url = `https://docs.google.com/spreadsheets/d/${SPREADSHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(sheetName)}&headers=1${rangeParam}&cachebust=${Date.now()}`;
+          const res = await fetch(url, { cache: 'no-store' });
+          if (!res.ok) throw new Error(`${sheetName}${range ? ` ${range}` : ''}: HTTP ${res.status}`);
+          const text = await res.text();
+          if (!text.trim()) return [];
+          const rows = parseCSV(text);
+          if (rows.length < 2) return [];
+          const headers = rows[0].map(h => h.trim());
+          return rows.slice(1).map(values => {
+            const obj = {};
+            headers.forEach((h, idx) => { if (h) obj[h] = values[idx] ?? ''; });
+            return obj;
+          });
+        };
+
+        const sheetTasks = {
+          PPI: fetchSheet('PPI'),
+          ANGGARAN_PPI: fetchSheet('ANGGARAN PPI', 'A1:M4'),
+          ANGGARAN_PPI_SUMMARY: fetchSheet('ANGGARAN PPI', 'A7:C8'),
+          PKU: fetchSheet('PKU'),
+          ANGGARAN_PKU: fetchSheet('ANGGARAN PKU'),
+          SURVEY_SDO: fetchSheet('SDO', 'A1:M14').catch(() => fetchSheet('SURVEY SDO', 'A1:M14')),
+          LPJ: fetchSheet('LPJ')
+        };
+
+        const results = await Promise.allSettled(Object.entries(sheetTasks).map(async ([key, promise]) => [key, await promise]));
+        const nextData = { ...data };
+        const failed = [];
+        let successCount = 0;
+
+        results.forEach(result => {
+          if (result.status === 'fulfilled') {
+            const [key, rows] = result.value;
+            nextData[key] = rows;
+            successCount++;
+          } else {
+            // Pertahankan data LIVE terakhir yang berhasil, jangan menggantinya dengan angka palsu.
+            failed.push(result.reason?.message || 'Sheet gagal dibaca');
+          }
+        });
+
+        if (successCount > 0) {
+          setData(nextData);
+          setLastUpdated(new Date().toLocaleTimeString('id-ID'));
+        }
+
+        if (failed.length > 0) {
+          setErrorMsg(`Sinkronisasi sebagian: ${failed.length} sumber data gagal dibaca. Data yang berhasil tetap diperbarui. ${failed.slice(0, 2).join(' | ')}`);
+        } else {
+          setErrorMsg(null);
+        }
+
+        if (!silent) setIsLoading(false);
+      };
+
+      useEffect(() => {
+        loadData(dataSourceMode);
+      }, [dataSourceMode]);
+
+      // AUTO SYNC: dashboard mengecek Google Sheets setiap 30 detik.
+      useEffect(() => {
+        if (dataSourceMode !== 'dynamic') return;
+        const timer = setInterval(() => loadData('dynamic', true), AUTO_REFRESH_MS);
+        const onVisible = () => {
+          if (document.visibilityState === 'visible') loadData('dynamic', true);
+        };
+        document.addEventListener('visibilitychange', onVisible);
+        return () => {
+          clearInterval(timer);
+          document.removeEventListener('visibilitychange', onVisible);
+        };
+      }, [dataSourceMode]);
+
+      const { ppiRegionRows, ppiProjectRows } = useMemo(() => {
+        const rows = data.PPI || [];
+        const regionRows = [];
+        const projectRows = [];
+        let isProjectSection = false;
+
+        rows.forEach(row => {
+          const regionVal = (getColVal(row, ['region', Object.keys(row)[0]]) || '').toLowerCase().trim();
+          
+          if (regionVal === 'project' || regionVal.includes('project')) {
+            isProjectSection = true;
+            return;
+          }
+
+          if (isProjectSection) {
+             if (regionVal !== '' && regionVal !== 'status') {
+               projectRows.push(row);
+             }
+          } else {
+             if (regionVal.includes('region')) {
+               regionRows.push(row);
+             }
+          }
+        });
+
+        return { ppiRegionRows: regionRows, ppiProjectRows: projectRows };
+      }, [data.PPI]);
+
+      const totalPpiProjects = useMemo(() => {
+        return ppiRegionRows.reduce((total, row) => total + sumJanToAug(row, selectedMonth), 0);
+      }, [ppiRegionRows, selectedMonth]);
+
+      // TOTAL ANGGARAN PPI TERPAKAI = penjumlahan B2:M4.
+      // Seluruh Januari-Desember untuk KP + CABANG + UNIT dan tidak dipengaruhi dropdown bulan.
+      const totalPpiAnggaranTerpakai = useMemo(() => {
+        const rows = (data.ANGGARAN_PPI || []).slice(0, 3);
+        return rows.reduce((grandTotal, row) => {
+          return grandTotal + MONTH_LIST.reduce((monthTotal, month) => monthTotal + getColNum(row, [month]), 0);
+        }, 0);
+      }, [data.ANGGARAN_PPI]);
+
+      const totalPkuPelatihan = useMemo(() => {
+        let total = 0;
+        const rows = data.PKU && data.PKU.length > 0 ? data.PKU : MOCK_DATA.PKU;
+        rows.forEach(row => {
+          total += sumJanToAug(row, selectedMonth);
+        });
+        return total > 0 ? total : 616;
+      }, [data.PKU, selectedMonth]);
+
+      const totalPkuAnggaranTerpakai = useMemo(() => {
+        let total = 0;
+        const rows = data.ANGGARAN_PKU && data.ANGGARAN_PKU.length > 0 ? data.ANGGARAN_PKU : MOCK_DATA.ANGGARAN_PKU;
+        rows.forEach(row => {
+          total += sumJanToAug(row, selectedMonth);
+        });
+        return total > 0 ? total : 705694776;
+      }, [data.ANGGARAN_PKU, selectedMonth]);
+
+      const itMetrics = useMemo(() => {
+        // Sheet SDO berbentuk 2 blok tabel:
+        // Baris 1-6  : posisi AO, SAO, KUM, KDO, HP pada kolom Januari-Desember.
+        // Baris 9-14 : SDO RKAP, SDO UPDATE, KDO UPDATE, KEBUTUHAN KDO RKAP, KEBUTUHAN KDO UPDATE.
+        // Dashboard mengambil NILAI PADA KOLOM TERAKHIR YANG SUDAH DIISI, bukan baris terakhir.
+        const sdoData = data.SURVEY_SDO || [];
+        const empty = { AO: 0, SAO: 0, KUM: 0, KDO: 0, HP: 0, sdoRkap: 0, sdoUpdate: 0, kdoUpdate: 0, kebKdoRkap: 0, kebKdoUpdate: 0, month: '-' };
+        if (!sdoData.length) return empty;
+
+        const normalize = (value) => String(value ?? '').trim().toLowerCase().replace(/_/g, ' ');
+        const positionOf = (row) => {
+          const key = Object.keys(row)[0];
+          return normalize(row.posisi ?? row[key]);
+        };
+        const findRow = (aliases) => {
+          const wanted = aliases.map(normalize);
+          return sdoData.find(row => wanted.includes(positionOf(row))) || null;
+        };
+
+        // Tentukan kolom bulan terakhir yang benar-benar memiliki isi pada blok SDO.
+        const targetPositions = ['ao', 'sao', 'kum', 'kdo', 'hp', 'sdo rkap', 'sdo update', 'kdo update', 'kebutuhan kdo rkap', 'kebutuhan kdo update'];
+        let latestMonthIndex = -1;
+        targetPositions.forEach(position => {
+          const row = findRow([position]);
+          if (!row) return;
+          MONTH_LIST.forEach((month, idx) => {
+            const key = Object.keys(row).find(k => normalize(k) === normalize(month));
+            const value = key !== undefined ? row[key] : '';
+            if (value !== undefined && value !== null && String(value).trim() !== '') latestMonthIndex = Math.max(latestMonthIndex, idx);
+          });
+        });
+
+        // Divisi IT (SDO) mengikuti kolom bulan TERAKHIR yang terisi di Sheet SDO.
+        // Jadi tidak mengambil baris terakhir dan tidak bergantung pada dropdown bulan global.
+        const monthIndex = latestMonthIndex;
+        const targetMonth = monthIndex >= 0 ? MONTH_LIST[monthIndex] : '-';
+
+        const valueAtMonth = (row) => {
+          if (!row || monthIndex < 0) return 0;
+          const key = Object.keys(row).find(k => normalize(k) === normalize(targetMonth));
+          return key !== undefined ? parseNum(row[key]) : 0;
+        };
+
+        const aoRow = findRow(['ao']);
+        const saoRow = findRow(['sao']);
+        const kumRow = findRow(['kum']);
+        const kdoRow = findRow(['kdo']);
+        const hpRow = findRow(['hp']);
+        const sdoRkapRow = findRow(['sdo rkap']);
+        const sdoUpdateRow = findRow(['sdo update']);
+        const kdoUpdateRow = findRow(['kdo update']);
+        const kebKdoRkapRow = findRow(['kebutuhan kdo rkap']);
+        const kebKdoUpdateRow = findRow(['kebutuhan kdo update']);
+
+        return {
+          AO: valueAtMonth(aoRow),
+          SAO: valueAtMonth(saoRow),
+          KUM: valueAtMonth(kumRow),
+          KDO: valueAtMonth(kdoRow),
+          HP: valueAtMonth(hpRow),
+          sdoRkap: valueAtMonth(sdoRkapRow),
+          sdoUpdate: valueAtMonth(sdoUpdateRow),
+          kdoUpdate: valueAtMonth(kdoUpdateRow),
+          kebKdoRkap: valueAtMonth(kebKdoRkapRow),
+          kebKdoUpdate: valueAtMonth(kebKdoUpdateRow),
+          month: targetMonth
+        };
+      }, [data.SURVEY_SDO]);
+
+      const generateAiInsights = async () => {
+        setIsAiLoading(true);
+        setAiResponse('');
+        try {
+          const apiEndpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${apiKey.trim()}`;
+          const prompt = `Act as an executive data analyst. Provide a brief 2-paragraph executive report in professional Indonesian based on the following multi-division metrics:
+- Total Project Divisi PPI: ${totalPpiProjects} Proyek
+- Total Realisasi Anggaran PPI (KP+Cabang+Unit): ${formatCurrency(totalPpiAnggaranTerpakai)}
+- Total Kegiatan Pelatihan PKU: ${totalPkuPelatihan} Kegiatan
+- Realisasi Anggaran PKU: ${formatCurrency(totalPkuAnggaranTerpakai)}
+- Divisi IT SDO (Bulan ${itMetrics.month}): SDO RKAP=${itMetrics.sdoRkap}, SDO Update=${itMetrics.sdoUpdate}, KDO Update=${itMetrics.kdoUpdate}, Keb KDO RKAP=${itMetrics.kebKdoRkap}, Keb KDO Update=${itMetrics.kebKdoUpdate}.
+Provide strategic observations and actionable budget/operational recommendations for board management.`;
+
+          const response = await fetch(apiEndpoint, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
+          });
+
+          const result = await response.json();
+          const text = result.candidates?.[0]?.content?.parts?.[0]?.text;
+          if (text) {
+            setAiResponse(text);
+          } else {
+            setAiResponse('Gagal mendapatkan respon AI. Pastikan kunci API Gemini valid.');
+          }
+        } catch (err) {
+          setAiResponse(`Terjadi kesalahan AI: ${err.message}`);
+        } finally {
+          setIsAiLoading(false);
+        }
+      };
+
+      const renderOverview = () => {
+        return (
+          <div className="space-y-6 animate-fade-in">
+            {/* Kartu Metrik Utama Anggaran */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+              <div className="glass-card p-6 rounded-2xl border-l-4 border-blue-500 shadow-sm">
+                <div className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">Total Pagu Anggaran</div>
+                <div className="text-2xl font-extrabold text-slate-800">{formatNum(totalPagu)}</div>
+              </div>
+              <div className="glass-card p-6 rounded-2xl border-l-4 border-emerald-500 shadow-sm">
+                <div className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">Total Realisasi</div>
+                <div className="text-2xl font-extrabold text-slate-800">{formatNum(totalRealisasi)}</div>
+              </div>
+              <div className="glass-card p-6 rounded-2xl border-l-4 border-purple-500 shadow-sm">
+                <div className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">Sisa Anggaran</div>
+                <div className="text-2xl font-extrabold text-slate-800">{formatNum(finalSisa)}</div>
+              </div>
+            </div>
+
+            {/* Kartu Ringkasan Aktivitas Antar Divisi */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-6">
+              <div className="glass-card p-5 rounded-2xl border-l-4 border-blue-600 shadow-sm">
+                <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">Total Proyek PPI</p>
+                <h3 className="text-2xl font-extrabold text-blue-600 mt-1">{formatNum(totalPpiProjects)} Proyek</h3>
+                <p className="text-xs text-slate-500 mt-0.5">Sumber: Data Sheet PPI</p>
+              </div>
+              <div className="glass-card p-5 rounded-2xl border-l-4 border-emerald-600 shadow-sm">
+                <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">Total Kegiatan PKU</p>
+                <h3 className="text-2xl font-extrabold text-emerald-600 mt-1">{formatNum(totalPkuPelatihan)} Kegiatan</h3>
+                <p className="text-xs text-slate-500 mt-0.5">Sumber: Data Sheet PKU</p>
+              </div>
+              <div className="glass-card p-5 rounded-2xl border-l-4 border-indigo-600 shadow-sm">
+                <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">Personel Utama SDO IT</p>
+                <h3 className="text-2xl font-extrabold text-indigo-600 mt-1">{formatNum(itMetrics.AO + itMetrics.SAO + itMetrics.KUM)} Personel</h3>
+                <p className="text-xs text-slate-500 mt-0.5">Sumber: Data Sheet SDO</p>
+              </div>
+            </div>
+
+            {/* Kondisi Personel SDO bulan terakhir terisi */}
+            {(() => {
+              const sdoPersonelChartConfig = {
+                type: 'bar',
+                data: {
+                  labels: ['AO', 'SAO', 'KUM', 'KDO', 'HP'],
+                  datasets: [{
+                    label: `Personel SDO - ${itMetrics.month}`,
+                    data: [itMetrics.AO, itMetrics.SAO, itMetrics.KUM, itMetrics.KDO, itMetrics.HP],
+                    backgroundColor: ['#6366f1', '#3b82f6', '#10b981', '#f59e0b', '#ec4899'],
+                    borderRadius: 8,
+                    borderSkipped: false
+                  }]
+                },
+                options: {
+                  responsive: true,
+                  maintainAspectRatio: false,
+                  scales: {
+                    y: {
+                      beginAtZero: true,
+                      ticks: { precision: 0 },
+                      title: { display: true, text: 'Jumlah Personel' }
+                    },
+                    x: { grid: { display: false } }
+                  },
+                  plugins: {
+                    legend: { position: 'top' },
+                    tooltip: {
+                      callbacks: {
+                        label: (ctx) => ` ${ctx.raw.toLocaleString('id-ID')} personel`
+                      }
+                    }
+                  }
+                }
+              };
+
+              const personelCards = [
+                ['AO', itMetrics.AO, 'border-indigo-500', 'text-indigo-600'],
+                ['SAO', itMetrics.SAO, 'border-blue-500', 'text-blue-600'],
+                ['KUM', itMetrics.KUM, 'border-emerald-500', 'text-emerald-600'],
+                ['KDO', itMetrics.KDO, 'border-amber-500', 'text-amber-600'],
+                ['HP', itMetrics.HP, 'border-pink-500', 'text-pink-600']
+              ];
+
+              return (
+                <div className="glass-card p-6 rounded-2xl shadow-sm">
+                  <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-2 mb-5">
+                    <div>
+                      <h3 className="text-lg font-bold text-slate-800">👥 Kondisi Personel SDO IT</h3>
+                      <p className="text-xs text-slate-500 mt-1">Data mengikuti kolom bulan terakhir yang terisi pada Sheet SDO</p>
+                    </div>
+                    <div className="inline-flex items-center gap-2 bg-indigo-50 text-indigo-700 px-3 py-2 rounded-xl text-xs font-extrabold">
+                      📅 Update: {itMetrics.month}
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 mb-6">
+                    {personelCards.map(([label, value, borderClass, textClass]) => (
+                      <div key={label} className={`bg-white border border-slate-200 ${borderClass} border-l-4 rounded-xl p-4 shadow-sm`}>
+                        <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">{label}</p>
+                        <p className={`text-2xl font-extrabold ${textClass} mt-1`}>{formatNum(value)}</p>
+                        <p className="text-[11px] text-slate-400 mt-0.5">Personel</p>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="h-80 relative">
+                    <ChartCanvas config={sdoPersonelChartConfig} />
+                  </div>
+                </div>
+              );
+            })()}
+
+            {/* Grafik Overview Utama */}
+            <div className="glass-card p-6 rounded-2xl shadow-sm">
+              <h3 className="text-lg font-bold text-slate-800 mb-4">Grafik Ringkasan Anggaran</h3>
+              <div className="h-80 relative">
+                <ChartCanvas config={overviewChartConfig} />
+              </div>
+            </div>
+          </div>
+        );
+      };
+
+      const renderPpiTab = () => {
+        const regionLabels = ppiRegionRows.map((row, idx) => getColVal(row, ['region', 'item', 'project', 'sumber_anggaran']) || `Region ${idx + 1}`);
+        const regionData = ppiRegionRows.map(row => sumJanToAug(row, selectedMonth));
+        const monthlyData = MONTH_LIST.map(m => ppiRegionRows.reduce((acc, row) => acc + getColNum(row, [m]), 0));
+
+        const rawAnggaranRows = (data.ANGGARAN_PPI || []).slice(0, 3);
+        const activeAnggaranRows = rawAnggaranRows;
+        const anggaranLabels = activeAnggaranRows.map((row, idx) =>
+          getColVal(row, ['sumber_anggaran', 'sumber', 'sumber anggaran', 'item', 'keterangan']) || `Sumber ${idx + 1}`
+        );
+        const anggaranValues = activeAnggaranRows.map(row => sumJanToAug(row, selectedMonth));
+
+        // Progress anggaran WAJIB mengambil A8, B8, C8.
+        const ppiSummaryRowLocal = (data.ANGGARAN_PPI_SUMMARY || [])[0] || {};
+        const paguCabang = getColNum(ppiSummaryRowLocal, ['pagu_anggaran_cabang', 'pagu anggaran cabang', 'pagu']);
+        const realisasiCabang = getColNum(ppiSummaryRowLocal, ['realisasi_anggaran', 'realisasi anggaran', 'realisasi']);
+        const sisaCabang = getColNum(ppiSummaryRowLocal, ['sisa_anggaran', 'sisa anggaran', 'sisa']);
+        const persenRealisasi = paguCabang > 0 ? Math.round((realisasiCabang / paguCabang) * 100) : 0;
+
+        const statusCounts = {};
+        ppiProjectRows.forEach(row => {
+           const keys = Object.keys(row);
+           const rawStatus = row['januari'] !== undefined ? row['januari'] : row[keys[1]] || row[keys[0]] || '';
+           const status = rawStatus.toString().toLowerCase().trim();
+           
+           if(status !== '' && status !== 'status' && status !== 'project' && !status.includes('region')) {
+               statusCounts[status] = (statusCounts[status] || 0) + 1;
+           }
+        });
+        
+        const statusLabels = Object.keys(statusCounts).map(k => k.replace(/\b\w/g, l => l.toUpperCase()));
+        const statusData = Object.values(statusCounts);
+
+        const statusPieConfig = {
+          type: 'doughnut',
+          data: {
+            labels: statusLabels,
+            datasets: [{
+              label: 'Status Proyek',
+              data: statusData,
+              backgroundColor: ['rgba(16, 185, 129, 0.85)', 'rgba(245, 158, 11, 0.85)', 'rgba(59, 130, 246, 0.85)', 'rgba(139, 92, 246, 0.85)'],
+              borderColor: '#ffffff',
+              borderWidth: 2,
+            }]
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { position: 'right', labels: { boxWidth: 12, padding: 12, font: { size: 11, family: 'Inter' } } } }
+          }
+        };
+
+        const pieChartConfig = {
+          type: 'doughnut',
+          data: {
+            labels: anggaranLabels,
+            datasets: [{
+              label: 'Realisasi Anggaran',
+              data: anggaranValues,
+              backgroundColor: ['rgba(37, 99, 235, 0.85)', 'rgba(6, 182, 212, 0.85)', 'rgba(16, 185, 129, 0.85)'],
+              borderColor: '#ffffff',
+              borderWidth: 2,
+            }]
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+              legend: { position: 'bottom', labels: { boxWidth: 12, padding: 12, font: { size: 11, family: 'Inter' } } },
+              tooltip: { callbacks: { label: (ctx) => ` ${ctx.label}: ${formatCurrency(ctx.raw)}` } }
+            }
+          }
+        };
+
+        const barChartConfig = {
+          type: 'bar',
+          data: {
+            labels: regionLabels,
+            datasets: [{ label: 'Total Proyek', data: regionData, backgroundColor: 'rgba(37, 99, 235, 0.85)', borderColor: '#1d4ed8', borderWidth: 1.5, borderRadius: 8 }]
+          },
+          options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, grid: { color: '#f1f5f9' } }, x: { grid: { display: false } } } }
+        };
+
+        const lineChartConfig = {
+          type: 'line',
+          data: {
+            labels: MONTH_LIST.map(m => m.slice(0, 3)),
+            datasets: [{ label: 'Tren Proyek PPI', data: monthlyData, borderColor: '#0284c7', backgroundColor: 'rgba(2, 132, 199, 0.15)', borderWidth: 3, fill: true, tension: 0.35 }]
+          },
+          options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, grid: { color: '#f1f5f9' } }, x: { grid: { display: false } } } }
+        };
+
+        return (
+          <div className="space-y-6 animate-fade-in">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-6">
+              <div className="glass-card p-5 rounded-2xl border-l-4 border-blue-500">
+                <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">Total Proyek PPI</p>
+                <h3 className="text-2xl font-extrabold text-blue-600 mt-1">{formatNum(totalPpiProjects)} Proyek</h3>
+                <p className="text-xs text-slate-500 mt-0.5">Akumulasi Seluruh Region</p>
+              </div>
+              <div className="glass-card p-5 rounded-2xl border-l-4 border-cyan-500">
+                <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">Total Anggaran PPI Terpakai</p>
+                <h3 className="text-2xl font-extrabold text-cyan-600 mt-1">{formatCurrency(totalPpiAnggaranTerpakai)}</h3>
+                <p className="text-xs text-slate-500 mt-0.5">Gabungan Realisasi KP + Cabang + Unit</p>
+              </div>
+              <div className="glass-card p-5 rounded-2xl border-l-4 border-indigo-500">
+                <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">Rata-Rata Proyek / Bulan</p>
+                <h3 className="text-2xl font-extrabold text-indigo-600 mt-1">{formatNum(Math.round(totalPpiProjects / (selectedMonth === 'All' ? 8 : 1)))} Proyek</h3>
+                <p className="text-xs text-slate-500 mt-0.5">Estimasi Performa Per Bulan</p>
+              </div>
+            </div>
+
+            <div className="glass-card p-6 rounded-2xl border-l-4 border-cyan-500 shadow-sm">
+              <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-4 gap-2">
+                <h3 className="text-base font-bold text-slate-800">💳 Progress Pagu Anggaran Cabang</h3>
+                <span className="text-xs font-semibold bg-cyan-100 text-cyan-800 px-3 py-1 rounded-full">
+                  Persentase Realisasi: {persenRealisasi}%
+                </span>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-4 text-sm">
+                <div className="bg-slate-50 p-3 rounded-xl border">
+                  <span className="text-xs text-slate-500 uppercase block font-semibold">Pagu Anggaran Cabang</span>
+                  <span className="text-lg font-bold text-slate-800">{formatCurrency(paguCabang)}</span>
+                </div>
+                <div className="bg-slate-50 p-3 rounded-xl border">
+                  <span className="text-xs text-slate-500 uppercase block font-semibold">Realisasi Anggaran</span>
+                  <span className="text-lg font-bold text-cyan-600">{formatCurrency(realisasiCabang)}</span>
+                </div>
+                <div className="bg-slate-50 p-3 rounded-xl border">
+                  <span className="text-xs text-slate-500 uppercase block font-semibold">Sisa Anggaran Cabang</span>
+                  <span className="text-lg font-bold text-emerald-600">{formatCurrency(sisaCabang)}</span>
+                </div>
+              </div>
+              <div className="w-full bg-slate-200 rounded-full h-4 overflow-hidden">
+                <div 
+                  className="bg-gradient-to-r from-blue-600 to-cyan-500 h-4 rounded-full transition-all duration-500" 
+                  style={{ width: `${persenRealisasi}%` }}
+                ></div>
+              </div>
+            </div>
+
+            {ppiProjectRows.length > 0 && (
+                <div className="glass-card p-6 rounded-2xl mb-6 border-l-4 border-indigo-500">
+                    <h3 className="text-base font-bold text-slate-800 mb-4 flex items-center gap-2">📊 Status Pelaksanaan Proyek</h3>
+                    <div className="flex flex-col md:flex-row gap-6 items-center">
+                        <div className="w-full md:w-1/3 h-48 relative"><ChartCanvas config={statusPieConfig} /></div>
+                        <div className="w-full md:w-2/3 grid grid-cols-2 sm:grid-cols-4 gap-4">
+                            {Object.entries(statusCounts).map(([status, count]) => (
+                                <div key={status} className="bg-slate-50 p-4 rounded-xl border border-slate-200 text-center">
+                                    <span className="text-xs text-slate-500 font-semibold uppercase block mb-1">{status}</span>
+                                    <span className="text-2xl font-bold text-slate-800">{count}</span>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              <div className="glass-card p-6 rounded-2xl">
+                <div className="flex items-center justify-between mb-4"><h3 className="text-sm font-bold text-slate-800">📊 Proyek per Region</h3></div>
+                <div className="h-64 relative"><ChartCanvas config={barChartConfig} /></div>
+              </div>
+              <div className="glass-card p-6 rounded-2xl">
+                <div className="flex items-center justify-between mb-4"><h3 className="text-sm font-bold text-slate-800">📈 Tren Proyek Bulanan</h3></div>
+                <div className="h-64 relative"><ChartCanvas config={lineChartConfig} /></div>
+              </div>
+              <div className="glass-card p-6 rounded-2xl">
+                <div className="flex items-center justify-between mb-4"><h3 className="text-sm font-bold text-slate-800">🍕 Anggaran per Sumber</h3></div>
+                <div className="h-64 relative"><ChartCanvas config={pieChartConfig} /></div>
+              </div>
+            </div>
+
+            <div className="glass-card p-6 rounded-2xl">
+              <h3 className="text-base font-bold text-slate-800 mb-4">📋 Tabel Rekapitulasi Proyek PPI</h3>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm text-left text-slate-600">
+                  <thead className="text-xs uppercase bg-slate-50 text-slate-500 border-b">
+                    <tr>
+                      <th className="py-3 px-4">Region / Item</th>
+                      {MONTH_LIST.map(m => <th key={m} className="py-3 px-2 text-right">{m.slice(0, 3)}</th>)}
+                      <th className="py-3 px-4 text-right">Total</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y">
+                    {ppiRegionRows.map((row, idx) => (
+                      <tr key={idx} className="hover:bg-slate-50 transition">
+                        <td className="py-3 px-4 font-semibold text-slate-800">{getColVal(row, ['region', 'item', 'project']) || `Region ${idx+1}`}</td>
+                        {MONTH_LIST.map(m => <td key={m} className="py-3 px-2 text-right">{formatNum(getColNum(row, [m]))}</td>)}
+                        <td className="py-3 px-4 text-right font-bold text-blue-600">{formatNum(sumJanToAug(row, selectedMonth))}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        );
+      };
+
+      const renderPkuTab = () => {
+        const pkuRows = data.PKU && data.PKU.length > 0 ? data.PKU : MOCK_DATA.PKU;
+        const trainingLabels = pkuRows.map((row, idx) => 
+          getColVal(row, ['jenis_pelatihan', 'jenis pelatihan', 'pelatihan', 'kegiatan', 'jenis', 'nama_pelatihan']) || Object.values(row)[0] || `Pelatihan ${idx + 1}`
+        );
+        const trainingValues = pkuRows.map(row => sumJanToAug(row, selectedMonth));
+        const monthlyPkuData = MONTH_LIST.map(m => pkuRows.reduce((acc, row) => acc + getColNum(row, [m]), 0));
+
+        const barChartConfig = {
+          type: 'bar',
+          data: {
+            labels: trainingLabels,
+            datasets: [{ label: 'Jumlah Kegiatan', data: trainingValues, backgroundColor: 'rgba(16, 185, 129, 0.85)', borderColor: '#059669', borderWidth: 1.5, borderRadius: 8 }]
+          },
+          options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, grid: { color: '#f1f5f9' } }, x: { grid: { display: false } } } }
+        };
+
+        const lineChartConfig = {
+          type: 'line',
+          data: {
+            labels: MONTH_LIST.map(m => m.slice(0, 3)),
+            datasets: [{ label: 'Tren Pelatihan PKU', data: monthlyPkuData, borderColor: '#10b981', backgroundColor: 'rgba(16, 185, 129, 0.15)', borderWidth: 3, fill: true, tension: 0.35 }]
+          },
+          options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, grid: { color: '#f1f5f9' } }, x: { grid: { display: false } } } }
+        };
+
+        return (
+          <div className="space-y-6 animate-fade-in">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-6">
+              <div className="glass-card p-5 rounded-2xl border-l-4 border-emerald-500">
+                <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">Total Kegiatan PKU</p>
+                <h3 className="text-2xl font-extrabold text-emerald-600 mt-1">{formatNum(totalPkuPelatihan)} Kegiatan</h3>
+                <p className="text-xs text-slate-500 mt-0.5">Akumulasi Seluruh Pelatihan</p>
+              </div>
+              <div className="glass-card p-5 rounded-2xl border-l-4 border-amber-500">
+                <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">Realisasi Anggaran PKU</p>
+                <h3 className="text-2xl font-extrabold text-amber-600 mt-1">{formatCurrency(totalPkuAnggaranTerpakai)}</h3>
+                <p className="text-xs text-slate-500 mt-0.5">Total Penyerapan Dana</p>
+              </div>
+              <div className="glass-card p-5 rounded-2xl border-l-4 border-teal-500">
+                <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">Rata-Rata Kegiatan / Bulan</p>
+                <h3 className="text-2xl font-extrabold text-teal-600 mt-1">{formatNum(Math.round(totalPkuPelatihan / (selectedMonth === 'All' ? 8 : 1)))} Kegiatan</h3>
+                <p className="text-xs text-slate-500 mt-0.5">Estimasi Performa Per Bulan</p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div className="glass-card p-6 rounded-2xl">
+                <div className="flex items-center justify-between mb-4"><h3 className="text-sm font-bold text-slate-800">📊 Kegiatan per Jenis Pelatihan</h3></div>
+                <div className="h-64 relative"><ChartCanvas config={barChartConfig} /></div>
+              </div>
+              <div className="glass-card p-6 rounded-2xl">
+                <div className="flex items-center justify-between mb-4"><h3 className="text-sm font-bold text-slate-800">📈 Tren Kegiatan Bulanan</h3></div>
+                <div className="h-64 relative"><ChartCanvas config={lineChartConfig} /></div>
+              </div>
+            </div>
+
+            <div className="glass-card p-6 rounded-2xl">
+              <h3 className="text-base font-bold text-slate-800 mb-4">📋 Tabel Rincian Pelatihan Divisi PKU</h3>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm text-left text-slate-600">
+                  <thead className="text-xs uppercase bg-slate-50 text-slate-500 border-b">
+                    <tr>
+                      <th className="py-3 px-4">Jenis Pelatihan</th>
+                      {MONTH_LIST.map(m => <th key={m} className="py-3 px-2 text-right">{m.slice(0, 3)}</th>)}
+                      <th className="py-3 px-4 text-right">Total Kegiatan</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y">
+                    {pkuRows.map((row, idx) => (
+                      <tr key={idx} className="hover:bg-slate-50 transition">
+                        <td className="py-3 px-4 font-semibold text-slate-800">
+                          {getColVal(row, ['jenis_pelatihan', 'jenis pelatihan', 'pelatihan', 'kegiatan', 'jenis', 'nama_pelatihan']) || Object.values(row)[0] || `Pelatihan ${idx+1}`}
+                        </td>
+                        {MONTH_LIST.map(m => <td key={m} className="py-3 px-2 text-right">{formatNum(getColNum(row, [m]))}</td>)}
+                        <td className="py-3 px-4 text-right font-bold text-emerald-600">{formatNum(sumJanToAug(row, selectedMonth))}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        );
+      };
+
+      const renderItTab = () => {
+        const barChartConfig = {
+          type: 'bar',
+          data: {
+            labels: ['AO', 'SAO', 'KUM', 'KDO', 'HP'],
+            datasets: [{ label: 'Jumlah Personel', data: [itMetrics.AO, itMetrics.SAO, itMetrics.KUM, itMetrics.KDO, itMetrics.HP], backgroundColor: 'rgba(139, 92, 246, 0.85)', borderColor: '#7c3aed', borderWidth: 1.5, borderRadius: 8 }]
+          },
+          options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, grid: { color: '#f1f5f9' } }, x: { grid: { display: false } } } }
+        };
+
+        const doughnutChartConfig = {
+          type: 'doughnut',
+          data: {
+            labels: ['AO', 'SAO', 'KUM', 'KDO', 'HP'],
+            datasets: [{ label: 'Komposisi SDO', data: [itMetrics.AO, itMetrics.SAO, itMetrics.KUM, itMetrics.KDO, itMetrics.HP], backgroundColor: ['rgba(139, 92, 246, 0.85)', 'rgba(59, 130, 246, 0.85)', 'rgba(16, 185, 129, 0.85)', 'rgba(245, 158, 11, 0.85)', 'rgba(236, 72, 153, 0.85)'], borderColor: '#ffffff', borderWidth: 2 }]
+          },
+          options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom', labels: { boxWidth: 12, padding: 12, font: { size: 11, family: 'Inter' } } } } }
+        };
+
+        const comparisonChartConfig = {
+          type: 'bar',
+          data: {
+            labels: ['SDO RKAP', 'SDO Update', 'KDO Update'],
+            datasets: [{
+              label: 'Jumlah',
+              data: [itMetrics.sdoRkap, itMetrics.sdoUpdate, itMetrics.kdoUpdate],
+              backgroundColor: ['rgba(59, 130, 246, 0.85)', 'rgba(139, 92, 246, 0.85)', 'rgba(16, 185, 129, 0.85)'],
+              borderColor: ['#2563eb', '#7c3aed', '#059669'],
+              borderWidth: 1.5,
+              borderRadius: 8
+            }]
+          },
+          options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, grid: { color: '#f1f5f9' } }, x: { grid: { display: false } } } }
+        };
+
+        const kebutuhanKdoChartConfig = {
+          type: 'bar',
+          data: {
+            labels: ['KDO Update', 'Keb. KDO RKAP', 'Keb. KDO Update'],
+            datasets: [{
+              label: 'Kebutuhan Personel',
+              data: [itMetrics.kdoUpdate, itMetrics.kebKdoRkap, itMetrics.kebKdoUpdate],
+              backgroundColor: ['rgba(16, 185, 129, 0.85)', 'rgba(245, 158, 11, 0.85)', 'rgba(236, 72, 153, 0.85)'],
+              borderColor: ['#059669', '#d97706', '#db2777'],
+              borderWidth: 1.5,
+              borderRadius: 8
+            }]
+          },
+          options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, grid: { color: '#f1f5f9' } }, x: { grid: { display: false } } } }
+        };
+
+        return (
+          <div className="space-y-6 animate-fade-in">
+            <div className="glass-card p-6 rounded-2xl">
+              <h3 className="text-lg font-bold text-slate-800 mb-4">Survey SDO Divisi IT (Bulan {itMetrics.month})</h3>
+              
+              <div className="grid grid-cols-1 sm:grid-cols-5 gap-4 mb-6">
+                <div className="p-4 bg-purple-50 rounded-xl text-center"><p className="text-xs text-purple-600 font-bold">AO</p><p className="text-2xl font-black text-purple-900">{formatNum(itMetrics.AO)}</p></div>
+                <div className="p-4 bg-purple-50 rounded-xl text-center"><p className="text-xs text-purple-600 font-bold">SAO</p><p className="text-2xl font-black text-purple-900">{formatNum(itMetrics.SAO)}</p></div>
+                <div className="p-4 bg-purple-50 rounded-xl text-center"><p className="text-xs text-purple-600 font-bold">KUM</p><p className="text-2xl font-black text-purple-900">{formatNum(itMetrics.KUM)}</p></div>
+                <div className="p-4 bg-purple-50 rounded-xl text-center"><p className="text-xs text-purple-600 font-bold">KDO</p><p className="text-2xl font-black text-purple-900">{formatNum(itMetrics.KDO)}</p></div>
+                <div className="p-4 bg-purple-50 rounded-xl text-center"><p className="text-xs text-purple-600 font-bold">HP</p><p className="text-2xl font-black text-purple-900">{formatNum(itMetrics.HP)}</p></div>
+              </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-4 mb-6">
+                <div className="p-4 bg-blue-50 rounded-xl text-center border border-blue-100">
+                  <p className="text-xs text-blue-600 font-bold uppercase">SDO RKAP</p>
+                  <p className="text-xl font-black text-blue-900 mt-1">{formatNum(itMetrics.sdoRkap)}</p>
+                </div>
+                <div className="p-4 bg-purple-50 rounded-xl text-center border border-purple-100">
+                  <p className="text-xs text-purple-600 font-bold uppercase">SDO Update</p>
+                  <p className="text-xl font-black text-purple-900 mt-1">{formatNum(itMetrics.sdoUpdate)}</p>
+                </div>
+                <div className="p-4 bg-emerald-50 rounded-xl text-center border border-emerald-100">
+                  <p className="text-xs text-emerald-600 font-bold uppercase">KDO Update</p>
+                  <p className="text-xl font-black text-emerald-900 mt-1">{formatNum(itMetrics.kdoUpdate)}</p>
+                </div>
+                <div className="p-4 bg-amber-50 rounded-xl text-center border border-amber-100">
+                  <p className="text-xs text-amber-600 font-bold uppercase">Keb. KDO RKAP</p>
+                  <p className="text-xl font-black text-amber-900 mt-1">{formatNum(itMetrics.kebKdoRkap)}</p>
+                </div>
+                <div className="p-4 bg-rose-50 rounded-xl text-center border border-rose-100 col-span-2 sm:col-span-1">
+                  <p className="text-xs text-rose-600 font-bold uppercase">Keb. KDO Update</p>
+                  <p className="text-xl font-black text-rose-900 mt-1">{formatNum(itMetrics.kebKdoUpdate)}</p>
+                </div>
+              </div>
+
+              <div className="p-4 bg-slate-50 rounded-xl border flex justify-between items-center mb-6">
+                <span className="text-sm font-bold text-slate-700">Total Personel SDO (AO + SAO + KUM)</span>
+                <span className="text-xl font-extrabold text-purple-600">{formatNum(itMetrics.AO + itMetrics.SAO + itMetrics.KUM)} Personel</span>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-6">
+                <div className="p-5 bg-white border rounded-2xl shadow-sm">
+                  <div className="flex items-center justify-between mb-4"><h4 className="text-sm font-bold text-slate-800">📊 Sebaran Personel SDO</h4></div>
+                  <div className="h-64 relative"><ChartCanvas config={barChartConfig} /></div>
+                </div>
+                <div className="p-5 bg-white border rounded-2xl shadow-sm">
+                  <div className="flex items-center justify-between mb-4"><h4 className="text-sm font-bold text-slate-800">🍩 Komposisi Rasio Personel SDO</h4></div>
+                  <div className="h-64 relative"><ChartCanvas config={doughnutChartConfig} /></div>
+                </div>
+                <div className="p-5 bg-white border rounded-2xl shadow-sm">
+                  <div className="flex items-center justify-between mb-4"><h4 className="text-sm font-bold text-slate-800">📈 SDO RKAP vs Update vs KDO</h4></div>
+                  <div className="h-64 relative"><ChartCanvas config={comparisonChartConfig} /></div>
+                </div>
+                <div className="p-5 bg-white border rounded-2xl shadow-sm">
+                  <div className="flex items-center justify-between mb-4"><h4 className="text-sm font-bold text-slate-800">📉 KDO Update vs Keb. KDO RKAP & Update</h4></div>
+                  <div className="h-64 relative"><ChartCanvas config={kebutuhanKdoChartConfig} /></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      };
+
+      const renderLpjTab = () => {
+        const rawLpj = data.LPJ && data.LPJ.length > 0 ? data.LPJ : [];
+
+        // 1. Memisahkan Data untuk Divisi (Mencari baris yang mengandung nama divisi)
+        const divisiRows = rawLpj.filter(row => {
+          const val = getColVal(row, ['lpj', 'divisi', 'keterangan']);
+          return val && ['pku', 'ppi', 'it', 'non staf'].some(k => val.toLowerCase().includes(k));
+        });
+const finalDivisiRows = divisiRows;
+
+        // 2. Memisahkan Data untuk PIC (Mendeteksi inisial PIC dan membaca kolom secara fleksibel)
+        const picRows = rawLpj.filter(row => {
+          const val = getColVal(row, ['pic', 'lpj', 'divisi', 'keterangan']);
+          return val && ['fav', 'scu', 'was', 'gne', 'ddu', 'kun'].some(k => val.toLowerCase().includes(k));
+        });
+
+        // Jika data PIC dari Google Sheet kosong/tidak terbaca, kita ambilkan langsung dari baris sheet jika ada, atau gunakan fallback aman
+const finalPicRows = picRows;
+
+        // Konfigurasi Chart Data LPJ per Divisi
+        const divisiChartConfig = {
+          type: 'bar',
+          data: {
+            labels: finalDivisiRows.map(row => getColVal(row, ['lpj']) || 'Divisi'),
+            datasets: [
+              { label: 'Total', data: finalDivisiRows.map(row => getColNum(row, ['total'])), backgroundColor: 'rgba(37, 99, 235, 0.85)', borderRadius: 6 },
+              { label: 'Close', data: finalDivisiRows.map(row => getColNum(row, ['close'])), backgroundColor: 'rgba(16, 185, 129, 0.85)', borderRadius: 6 },
+              { label: 'Open', data: finalDivisiRows.map(row => getColNum(row, ['open'])), backgroundColor: 'rgba(245, 158, 11, 0.85)', borderRadius: 6 }
+            ]
+          },
+          options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'top', labels: { boxWidth: 12, font: { size: 11, family: 'Inter' } } } }, scales: { y: { beginAtZero: true, grid: { color: '#f1f5f9' } }, x: { grid: { display: false } } } }
+        };
+
+        // Konfigurasi Chart Data LPJ per PIC (Mendukung pembacaan kolom total_pic / total)
+        const picChartConfig = {
+          type: 'bar',
+          data: {
+            labels: finalPicRows.map(row => getColVal(row, ['pic', 'lpj']) || 'PIC'),
+            datasets: [
+              { label: 'Total', data: finalPicRows.map(row => getColNum(row, ['total_pic', 'total'])), backgroundColor: 'rgba(139, 92, 246, 0.85)', borderRadius: 6 },
+              { label: 'Close', data: finalPicRows.map(row => getColNum(row, ['close_pic', 'close'])), backgroundColor: 'rgba(16, 185, 129, 0.85)', borderRadius: 6 },
+              { label: 'Open', data: finalPicRows.map(row => getColNum(row, ['open_pic', 'open'])), backgroundColor: 'rgba(245, 158, 11, 0.85)', borderRadius: 6 }
+            ]
+          },
+          options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'top', labels: { boxWidth: 12, font: { size: 11, family: 'Inter' } } } }, scales: { y: { beginAtZero: true, grid: { color: '#f1f5f9' } }, x: { grid: { display: false } } } }
+        };
+
+        return (
+          <div className="space-y-6 animate-fade-in">
+            {/* Bagian Atas: Data LPJ per Divisi */}
+            <div className="glass-card p-6 rounded-2xl border-l-4 border-blue-500 shadow-sm">
+              <h3 className="text-lg font-bold text-slate-800 mb-2">📊 Data LPJ per Divisi</h3>
+              <p className="text-xs text-slate-500 mb-6">Monitoring status LPJ berdasarkan pembagian divisi.</p>
+              
+              <div className="h-72 relative mb-6">
+                <ChartCanvas config={divisiChartConfig} />
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm text-left text-slate-600">
+                  <thead className="text-xs uppercase bg-slate-50 text-slate-500 border-b">
+                    <tr>
+                      <th className="py-3 px-4">LPJ (Divisi)</th>
+                      <th className="py-3 px-4 text-right">Total</th>
+                      <th className="py-3 px-4 text-right">Close</th>
+                      <th className="py-3 px-4 text-right">Open</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y">
+                    {finalDivisiRows.map((row, idx) => (
+                      <tr key={idx} className="hover:bg-slate-50 transition">
+                        <td className="py-3 px-4 font-semibold text-slate-800">{getColVal(row, ['lpj']) || `-`}</td>
+                        <td className="py-3 px-4 text-right font-bold text-blue-600">{formatNum(getColNum(row, ['total']))}</td>
+                        <td className="py-3 px-4 text-right font-medium text-emerald-600">{formatNum(getColNum(row, ['close']))}</td>
+                        <td className="py-3 px-4 text-right font-medium text-amber-600">{formatNum(getColNum(row, ['open']))}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* Bagian Bawah: Data LPJ per PIC */}
+            <div className="glass-card p-6 rounded-2xl border-l-4 border-purple-500 shadow-sm">
+              <h3 className="text-lg font-bold text-slate-800 mb-2">📊 Data LPJ per PIC</h3>
+              <p className="text-xs text-slate-500 mb-6">Monitoring status LPJ berdasarkan rincian PIC.</p>
+              
+              <div className="h-72 relative mb-6">
+                <ChartCanvas config={picChartConfig} />
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm text-left text-slate-600">
+                  <thead className="text-xs uppercase bg-slate-50 text-slate-500 border-b">
+                    <tr>
+                      <th className="py-3 px-4">PIC</th>
+                      <th className="py-3 px-4 text-right">Total</th>
+                      <th className="py-3 px-4 text-right">Close</th>
+                      <th className="py-3 px-4 text-right">Open</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y">
+                    {finalPicRows.map((row, idx) => (
+                      <tr key={idx} className="hover:bg-slate-50 transition">
+                        <td className="py-3 px-4 font-semibold text-slate-800">{getColVal(row, ['pic', 'lpj']) || `-`}</td>
+                        <td className="py-3 px-4 text-right font-bold text-purple-600">{formatNum(getColNum(row, ['total_pic', 'total']))}</td>
+                        <td className="py-3 px-4 text-right font-medium text-emerald-600">{formatNum(getColNum(row, ['close_pic', 'close']))}</td>
+                        <td className="py-3 px-4 text-right font-medium text-amber-600">{formatNum(getColNum(row, ['open_pic', 'open']))}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        );
+      };
+
+      const renderAiTab = () => (
+        <div className="glass-card p-6 rounded-2xl space-y-6 animate-fade-in max-w-4xl mx-auto">
+          <div>
+            <h3 className="text-xl font-bold text-slate-800">🤖 AI Executive Insights (Gemini)</h3>
+            <p className="text-sm text-slate-500 mt-1">Analisis otomatis performa multi-divisi menggunakan model AI.</p>
+          </div>
+          <div className="flex flex-col sm:flex-row gap-3">
+            <input type="password" placeholder="Masukkan Gemini API Key (Opsional)..." value={apiKey} onChange={(e) => setApiKey(e.target.value)} className="flex-1 px-4 py-2.5 border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+            <button onClick={generateAiInsights} disabled={isAiLoading} className="px-6 py-2.5 bg-gradient-to-r from-blue-600 to-indigo-600 text-white rounded-xl text-sm font-semibold hover:opacity-90 disabled:opacity-50 transition shadow-md flex items-center justify-center gap-2">
+              {isAiLoading ? 'Menganalisis Data...' : '⚡ Generate Insights'}
+            </button>
+          </div>
+          {aiResponse && <div className="p-6 bg-slate-50 border rounded-xl text-slate-700 leading-relaxed text-sm whitespace-pre-line">{aiResponse}</div>}
+        </div>
+      );
+
+      return (
+        <div className="min-h-screen flex flex-col">
+          <header className="bg-white border-b border-slate-200 sticky top-0 z-30 shadow-sm">
+            <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl gradient-blue flex items-center justify-center text-white font-black text-xl shadow-md">M</div>
+                <div>
+                  <h1 className="text-lg font-extrabold text-slate-800">Dashboard MSU WEB V.2</h1>
+                  <p className="text-xs text-slate-500">Mode: <strong>{dataSourceMode === 'static' ? '🔒 Statis (Mock Data)' : '🌐 Dinamis (Live Sheets)'}</strong> <span className="ml-2 text-emerald-600">• Auto-sync 30 detik</span></p>
+                </div>
+              </div>
+              <div className="flex items-center flex-wrap gap-3">
+                <div className="bg-slate-100 p-1 rounded-xl flex items-center gap-1 text-xs font-bold">
+                  <button 
+                    onClick={() => setDataSourceMode('static')} 
+                    className={`px-3 py-1.5 rounded-lg transition ${dataSourceMode === 'static' ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-200'}`}
+                  >
+                    🔒 Statis
+                  </button>
+                  <button 
+                    onClick={() => setDataSourceMode('dynamic')} 
+                    className={`px-3 py-1.5 rounded-lg transition ${dataSourceMode === 'dynamic' ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-200'}`}
+                  >
+                    🌐 Dinamis (Live)
+                  </button>
+                </div>
+
+                {activeTab !== 'ai' && (
+                  <select value={selectedMonth} onChange={(e) => setSelectedMonth(e.target.value)} className="bg-slate-100 border-none text-slate-700 text-xs font-bold px-3 py-2 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500">
+                    <option value="All">Semua Bulan (Jan - Des)</option>
+                    {MONTH_LIST.map(m => <option key={m} value={m}>{m}</option>)}
+                  </select>
+                )}
+
+                <button onClick={() => loadData(dataSourceMode)} disabled={isLoading} className="bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold px-3.5 py-2 rounded-xl transition flex items-center gap-2">
+                  <span className={isLoading ? 'animate-spin' : ''}>🔄</span>
+                  {isLoading ? 'Loading...' : 'Refresh'}
+                </button>
+              </div>
+            </div>
+          </header>
+
+          <div className="bg-white border-b border-slate-200">
+            <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex space-x-2 overflow-x-auto py-2">
+              <button onClick={() => setActiveTab('overview')} className={`px-4 py-2 rounded-xl text-xs font-bold transition ${activeTab === 'overview' ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-100'}`}>🌐 Executive Summary</button>
+              <button onClick={() => setActiveTab('ppi')} className={`px-4 py-2 rounded-xl text-xs font-bold transition ${activeTab === 'ppi' ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-100'}`}>📈 Divisi PPI</button>
+              <button onClick={() => setActiveTab('pku')} className={`px-4 py-2 rounded-xl text-xs font-bold transition ${activeTab === 'pku' ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-100'}`}>🎓 Divisi PKU</button>
+              <button onClick={() => setActiveTab('it')} className={`px-4 py-2 rounded-xl text-xs font-bold transition ${activeTab === 'it' ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-100'}`}>💻 Divisi IT (SDO)</button>
+              <button onClick={() => setActiveTab('lpj')} className={`px-4 py-2 rounded-xl text-xs font-bold transition ${activeTab === 'lpj' ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-100'}`}>📁 LPJ</button>
+              <button onClick={() => setActiveTab('ai')} className={`px-4 py-2 rounded-xl text-xs font-bold transition ${activeTab === 'ai' ? 'bg-purple-600 text-white shadow-sm' : 'purple-600 hover:bg-purple-50'}`}>🤖 AI Insights</button>
+            </div>
+          </div>
+
+          <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8">
+            {errorMsg && (
+              <div className="mb-6 p-4 bg-amber-50 border border-amber-200 text-amber-800 text-xs rounded-xl flex items-center justify-between">
+                <span>⚠️ {errorMsg}</span>
+                <span className="text-slate-400">Terakhir disinkron: {lastUpdated}</span>
+              </div>
+            )}
+            {dataSourceMode === 'dynamic' && !Object.values(data).some(rows => Array.isArray(rows) && rows.length > 0) && !isLoading && (
+              <div className="mb-6 p-4 bg-red-50 border border-red-200 text-red-800 text-sm rounded-xl">
+                <strong>Data Live belum tersedia.</strong> Pastikan Google Sheets dapat diakses oleh publik/link sharing dan nama tab sesuai: PPI, ANGGARAN PPI, PKU, ANGGARAN PKU, SDO (atau SURVEY SDO), dan LPJ.
+              </div>
+            )}
+            {activeTab === 'overview' && renderOverview()}
+            {activeTab === 'ppi' && renderPpiTab()}
+            {activeTab === 'pku' && renderPkuTab()}
+            {activeTab === 'it' && renderItTab()}
+            {activeTab === 'lpj' && renderLpjTab()}
+            {activeTab === 'ai' && renderAiTab()}
+          </main>
+
+          <footer className="bg-white border-t border-slate-200 py-4 text-center text-xs text-slate-400">
+            Dashboard ESH IMY V.2 • Mode: {dataSourceMode === 'static' ? 'Statis (Mock Data)' : 'Dinamis (Live Google Sheets)'} • {lastUpdated}
+          </footer>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>
