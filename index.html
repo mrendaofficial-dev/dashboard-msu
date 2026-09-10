@@ -89,7 +89,7 @@
     const SPREADSHEET_ID = '16nhQsQ01U1e6xcTD-Rn4omttp3rG5jL4Ioszl7HpIH8';
     const MONTH_LIST = ['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'];
     const AUTO_REFRESH_MS = 30000; // sinkronisasi otomatis setiap 30 detik
-    const SHEET_NAMES = ['PPI', 'ANGGARAN PPI', 'ANGGARAN PPI SUMMARY', 'PKU', 'ANGGARAN PKU', 'SDO', 'LPJ'];
+    const SHEET_NAMES = ['PPI', 'ANGGARAN PPI', 'ANGGARAN PPI SUMMARY', 'PKU', 'ANGGARAN PKU', 'SDO', 'LPJ', 'SEWA'];
 
     const parseNum = (val) => {
       if (val === null || val === undefined) return 0;
@@ -219,7 +219,7 @@
       const [dataSourceMode, setDataSourceMode] = useState('dynamic'); 
       const [isLoading, setIsLoading] = useState(false);
       const [lastUpdated, setLastUpdated] = useState(new Date().toLocaleTimeString('id-ID'));
-      const [data, setData] = useState({ PPI: [], ANGGARAN_PPI: [], ANGGARAN_PPI_SUMMARY: [], PKU: [], ANGGARAN_PKU: [], SURVEY_SDO: [], LPJ: [] });
+      const [data, setData] = useState({ PPI: [], ANGGARAN_PPI: [], ANGGARAN_PPI_SUMMARY: [], PKU: [], ANGGARAN_PKU: [], SURVEY_SDO: [], LPJ: [], SEWA_OWNERSHIP: [], SEWA_MOTOR_POSITION: [], SEWA_MOTOR_RENT: [], SEWA_OFFICE_RENT: [], SEWA_RENT_PRICE: [], SEWA_AVG_RENT: [] });
       const [apiKey, setApiKey] = useState('');
       const [aiResponse, setAiResponse] = useState('');
       const [isAiLoading, setIsAiLoading] = useState(false);
@@ -279,14 +279,15 @@
           return rows;
         };
 
-        const fetchSheet = async (sheetName, range = null) => {
+        const fetchSheet = async (sheetName, range = null, hasHeader = true) => {
           const rangeParam = range ? `&range=${encodeURIComponent(range)}` : '';
-          const url = `https://docs.google.com/spreadsheets/d/${SPREADSHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(sheetName)}&headers=1${rangeParam}&cachebust=${Date.now()}`;
+          const url = `https://docs.google.com/spreadsheets/d/${SPREADSHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(sheetName)}&headers=${hasHeader ? 1 : 0}${rangeParam}&cachebust=${Date.now()}`;
           const res = await fetch(url, { cache: 'no-store' });
           if (!res.ok) throw new Error(`${sheetName}${range ? ` ${range}` : ''}: HTTP ${res.status}`);
           const text = await res.text();
           if (!text.trim()) return [];
           const rows = parseCSV(text);
+          if (!hasHeader) return rows;
           if (rows.length < 2) return [];
           const headers = rows[0].map(h => h.trim());
           return rows.slice(1).map(values => {
@@ -303,7 +304,14 @@
           PKU: fetchSheet('PKU'),
           ANGGARAN_PKU: fetchSheet('ANGGARAN PKU'),
           SURVEY_SDO: fetchSheet('SDO', 'A1:M14').catch(() => fetchSheet('SURVEY SDO', 'A1:M14')),
-          LPJ: fetchSheet('LPJ')
+          LPJ: fetchSheet('LPJ'),
+          // Sheet SEWA memiliki beberapa blok dengan header berbeda, sehingga dibaca per blok.
+          SEWA_OWNERSHIP: fetchSheet('SEWA', 'A2:B5'),
+          SEWA_MOTOR_POSITION: fetchSheet('SEWA', 'A7:B11'),
+          SEWA_MOTOR_RENT: fetchSheet('SEWA', 'A14:M17'),
+          SEWA_OFFICE_RENT: fetchSheet('SEWA', 'A20:M22'),
+          SEWA_RENT_PRICE: fetchSheet('SEWA', 'A25:B26', false),
+          SEWA_AVG_RENT: fetchSheet('SEWA', 'A28:B31', false)
         };
 
         const results = await Promise.allSettled(Object.entries(sheetTasks).map(async ([key, promise]) => [key, await promise]));
@@ -481,6 +489,93 @@
           month: targetMonth
         };
       }, [data.SURVEY_SDO]);
+
+      const sewaMetrics = useMemo(() => {
+        const normalize = (value) => String(value ?? '').trim().toLowerCase().replace(/_/g, ' ');
+        const firstKey = (row) => Object.keys(row)[0];
+        const secondKey = (row) => Object.keys(row)[1];
+        const rowLabel = (row) => normalize(row?.[firstKey(row)]);
+        const rowValue = (row) => parseNum(row?.[secondKey(row)]);
+
+        const ownership = { MNM: 0, SEWA: 0, 'SEWA+': 0 };
+        (data.SEWA_OWNERSHIP || []).forEach(row => {
+          const label = rowLabel(row);
+          if (label === 'mnm') ownership.MNM = rowValue(row);
+          else if (label === 'sewa') ownership.SEWA = rowValue(row);
+          else if (label === 'sewa+') ownership['SEWA+'] = rowValue(row);
+        });
+
+        const motorPosition = { cabang: 0, mekaar: 0, ulamm: 0, pic: 0 };
+        (data.SEWA_MOTOR_POSITION || []).forEach(row => {
+          const label = rowLabel(row);
+          if (label in motorPosition) motorPosition[label] = rowValue(row);
+        });
+
+        const latestMonth = (rows, targetLabels) => {
+          let latestIndex = -1;
+          const wanted = targetLabels.map(normalize);
+          rows.forEach(row => {
+            const label = rowLabel(row);
+            if (!wanted.includes(label)) return;
+            MONTH_LIST.forEach((month, idx) => {
+              const key = Object.keys(row).find(k => normalize(k) === normalize(month));
+              const value = key !== undefined ? row[key] : '';
+              if (String(value ?? '').trim() !== '') latestIndex = Math.max(latestIndex, idx);
+            });
+          });
+          return latestIndex;
+        };
+
+        const motorRows = data.SEWA_MOTOR_RENT || [];
+        const motorMonthIndex = latestMonth(motorRows, ['aktif', 'akan habis', 'habis']);
+        const motorMonth = motorMonthIndex >= 0 ? MONTH_LIST[motorMonthIndex] : '-';
+        const valueAtMonth = (rows, labels, monthIndex) => {
+          const row = rows.find(r => labels.map(normalize).includes(rowLabel(r)));
+          if (!row || monthIndex < 0) return 0;
+          const month = MONTH_LIST[monthIndex];
+          const key = Object.keys(row).find(k => normalize(k) === normalize(month));
+          return key !== undefined ? parseNum(row[key]) : 0;
+        };
+
+        const officeRows = data.SEWA_OFFICE_RENT || [];
+        const officeMonthIndex = latestMonth(officeRows, ['akan habis', 'akad baru']);
+        const officeMonth = officeMonthIndex >= 0 ? MONTH_LIST[officeMonthIndex] : '-';
+        const officeAkanHabis = valueAtMonth(officeRows, ['akan habis'], officeMonthIndex);
+        const officeAkadBaru = valueAtMonth(officeRows, ['akad baru'], officeMonthIndex);
+
+        const rentPrice = { tertinggi: 0, terendah: 0 };
+        (data.SEWA_RENT_PRICE || []).forEach(row => {
+          const label = normalize(row?.[0]);
+          const value = parseNum(row?.[1]);
+          if (label === 'tertinggi') rentPrice.tertinggi = value;
+          if (label === 'terendah') rentPrice.terendah = value;
+        });
+
+        const avgRent = { MNM: 0, SEWA: 0, 'SEWA+': 0 };
+        (data.SEWA_AVG_RENT || []).forEach(row => {
+          const label = normalize(row?.[0]);
+          const value = parseNum(row?.[1]);
+          if (label === 'mnm') avgRent.MNM = value;
+          else if (label === 'sewa') avgRent.SEWA = value;
+          else if (label === 'sewa+') avgRent['SEWA+'] = value;
+        });
+
+        return {
+          ownership,
+          totalOwnership: ownership.MNM + ownership.SEWA + ownership['SEWA+'],
+          motorPosition,
+          motorMonth,
+          motorAktif: valueAtMonth(motorRows, ['aktif'], motorMonthIndex),
+          motorAkanHabis: valueAtMonth(motorRows, ['akan habis'], motorMonthIndex),
+          motorHabis: valueAtMonth(motorRows, ['habis'], motorMonthIndex),
+          officeMonth,
+          officeAkanHabis,
+          officeAkadBaru,
+          officeBelumAkad: Math.max(officeAkanHabis - officeAkadBaru, 0),
+          rentPrice,
+          avgRent
+        };
+      }, [data.SEWA_OWNERSHIP, data.SEWA_MOTOR_POSITION, data.SEWA_MOTOR_RENT, data.SEWA_OFFICE_RENT, data.SEWA_RENT_PRICE, data.SEWA_AVG_RENT]);
 
       const generateAiInsights = async () => {
         setIsAiLoading(true);
@@ -1156,6 +1251,101 @@ const finalPicRows = picRows;
         );
       };
 
+      const renderSewaTab = () => {
+        const ownershipChartConfig = {
+          type: 'doughnut',
+          data: {
+            labels: ['MNM', 'SEWA', 'SEWA+'],
+            datasets: [{ data: [sewaMetrics.ownership.MNM, sewaMetrics.ownership.SEWA, sewaMetrics.ownership['SEWA+']], backgroundColor: ['#2563eb', '#f59e0b', '#8b5cf6'], borderWidth: 0 }]
+          },
+          options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom' } } }
+        };
+
+        const officeChartConfig = {
+          type: 'bar',
+          data: {
+            labels: ['Akan Habis Sewa', 'Akad Baru', 'Belum Akad'],
+            datasets: [{ label: `Monitoring Masa Sewa Kantor - ${sewaMetrics.officeMonth}`, data: [sewaMetrics.officeAkanHabis, sewaMetrics.officeAkadBaru, sewaMetrics.officeBelumAkad], backgroundColor: ['#f59e0b', '#10b981', '#ef4444'], borderRadius: 8, borderSkipped: false }]
+          },
+          options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, ticks: { precision: 0 } }, x: { grid: { display: false } } } }
+        };
+
+        const motorTrendConfig = {
+          type: 'line',
+          data: {
+            labels: MONTH_LIST.map(m => m.slice(0, 3)),
+            datasets: [
+              { label: 'Aktif', data: (data.SEWA_MOTOR_RENT || []).find(r => String(Object.values(r)[0] || '').toLowerCase().trim() === 'aktif') ? MONTH_LIST.map(m => { const r=(data.SEWA_MOTOR_RENT||[]).find(x=>String(Object.values(x)[0]||'').toLowerCase().trim()==='aktif'); const k=Object.keys(r).find(k=>k.toLowerCase()===m.toLowerCase()); return parseNum(k!==undefined?r[k]:0); }) : MONTH_LIST.map(()=>0), borderWidth: 3, tension: 0.35 },
+              { label: 'Akan Habis', data: (data.SEWA_MOTOR_RENT || []).find(r => String(Object.values(r)[0] || '').toLowerCase().trim() === 'akan habis') ? MONTH_LIST.map(m => { const r=(data.SEWA_MOTOR_RENT||[]).find(x=>String(Object.values(x)[0]||'').toLowerCase().trim()==='akan habis'); const k=Object.keys(r).find(k=>k.toLowerCase()===m.toLowerCase()); return parseNum(k!==undefined?r[k]:0); }) : MONTH_LIST.map(()=>0), borderWidth: 3, tension: 0.35 },
+              { label: 'Habis', data: (data.SEWA_MOTOR_RENT || []).find(r => String(Object.values(r)[0] || '').toLowerCase().trim() === 'habis') ? MONTH_LIST.map(m => { const r=(data.SEWA_MOTOR_RENT||[]).find(x=>String(Object.values(x)[0]||'').toLowerCase().trim()==='habis'); const k=Object.keys(r).find(k=>k.toLowerCase()===m.toLowerCase()); return parseNum(k!==undefined?r[k]:0); }) : MONTH_LIST.map(()=>0), borderWidth: 3, tension: 0.35 }
+            ]
+          },
+          options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'top' } }, scales: { y: { beginAtZero: true, ticks: { precision: 0 } }, x: { grid: { display: false } } } }
+        };
+
+        return (
+          <div className="space-y-6 animate-fade-in">
+            <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+              <div>
+                <h2 className="text-2xl font-extrabold text-slate-800">🏢 Monitoring Sewa & Aset</h2>
+                <p className="text-sm text-slate-500 mt-1">Data bersumber dari tab SEWA Google Sheets dan diperbarui otomatis mengikuti data terbaru.</p>
+              </div>
+              <div className="inline-flex items-center gap-2 bg-blue-50 text-blue-700 px-3 py-2 rounded-xl text-xs font-extrabold">📅 Masa Sewa Kantor: {sewaMetrics.officeMonth}</div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-5">
+              {[['MNM', sewaMetrics.ownership.MNM, 'border-blue-500', 'text-blue-600'], ['SEWA', sewaMetrics.ownership.SEWA, 'border-amber-500', 'text-amber-600'], ['SEWA+', sewaMetrics.ownership['SEWA+'], 'border-purple-500', 'text-purple-600']].map(([label,value,border,text]) => (
+                <div key={label} className={`glass-card p-5 rounded-2xl border-l-4 ${border} shadow-sm`}><p className="text-xs font-bold text-slate-400 uppercase tracking-wider">Kepemilikan Kantor {label}</p><h3 className={`text-3xl font-extrabold ${text} mt-1`}>{formatNum(value)}</h3><p className="text-xs text-slate-500 mt-1">Kantor</p></div>
+              ))}
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              <div className="glass-card p-6 rounded-2xl shadow-sm">
+                <h3 className="text-lg font-bold text-slate-800 mb-4">🏢 Kepemilikan Kantor</h3>
+                <div className="h-72 relative"><ChartCanvas config={ownershipChartConfig} /></div>
+                <p className="text-xs text-slate-500 mt-3">Total kantor: <strong>{formatNum(sewaMetrics.totalOwnership)}</strong></p>
+              </div>
+
+              <div className="glass-card p-6 rounded-2xl shadow-sm">
+                <div className="flex items-center justify-between mb-4"><h3 className="text-lg font-bold text-slate-800">📅 Masa Sewa Kantor</h3><span className="text-xs font-bold bg-slate-100 px-3 py-1.5 rounded-full">{sewaMetrics.officeMonth}</span></div>
+                <div className="grid grid-cols-3 gap-3 mb-5">
+                  <div className="bg-amber-50 border border-amber-100 rounded-xl p-3"><p className="text-[11px] font-bold text-amber-700">AKAN HABIS</p><p className="text-2xl font-extrabold text-amber-700">{formatNum(sewaMetrics.officeAkanHabis)}</p></div>
+                  <div className="bg-emerald-50 border border-emerald-100 rounded-xl p-3"><p className="text-[11px] font-bold text-emerald-700">AKAD BARU</p><p className="text-2xl font-extrabold text-emerald-700">{formatNum(sewaMetrics.officeAkadBaru)}</p></div>
+                  <div className="bg-red-50 border border-red-100 rounded-xl p-3"><p className="text-[11px] font-bold text-red-700">BELUM AKAD</p><p className="text-2xl font-extrabold text-red-700">{formatNum(sewaMetrics.officeBelumAkad)}</p></div>
+                </div>
+                <div className="h-56 relative"><ChartCanvas config={officeChartConfig} /></div>
+              </div>
+            </div>
+
+            <div className="glass-card p-6 rounded-2xl shadow-sm">
+              <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-2 mb-5"><div><h3 className="text-lg font-bold text-slate-800">🏍️ Masa Sewa Motor</h3><p className="text-xs text-slate-500 mt-1">Monitoring mengikuti bulan terakhir yang terisi pada data motor.</p></div><span className="text-xs font-bold bg-blue-50 text-blue-700 px-3 py-1.5 rounded-full">Update: {sewaMetrics.motorMonth}</span></div>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
+                <div className="bg-slate-50 border rounded-xl p-4"><p className="text-xs font-bold text-slate-400">AKTIF</p><p className="text-2xl font-extrabold text-slate-800">{formatNum(sewaMetrics.motorAktif)}</p></div>
+                <div className="bg-amber-50 border border-amber-100 rounded-xl p-4"><p className="text-xs font-bold text-amber-600">AKAN HABIS</p><p className="text-2xl font-extrabold text-amber-700">{formatNum(sewaMetrics.motorAkanHabis)}</p></div>
+                <div className="bg-red-50 border border-red-100 rounded-xl p-4"><p className="text-xs font-bold text-red-600">HABIS</p><p className="text-2xl font-extrabold text-red-700">{formatNum(sewaMetrics.motorHabis)}</p></div>
+              </div>
+              <div className="h-72 relative"><ChartCanvas config={motorTrendConfig} /></div>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              <div className="glass-card p-6 rounded-2xl shadow-sm">
+                <h3 className="text-lg font-bold text-slate-800 mb-4">👥 Posisi Motor</h3>
+                <div className="grid grid-cols-2 gap-3">
+                  {Object.entries(sewaMetrics.motorPosition).map(([label,value]) => <div key={label} className="bg-slate-50 border rounded-xl p-4"><p className="text-xs font-bold text-slate-400 uppercase">{label}</p><p className="text-2xl font-extrabold text-slate-800 mt-1">{formatNum(value)}</p></div>)}
+                </div>
+              </div>
+              <div className="glass-card p-6 rounded-2xl shadow-sm">
+                <h3 className="text-lg font-bold text-slate-800 mb-4">💰 Harga Sewa Kantor</h3>
+                <div className="grid grid-cols-2 gap-3 mb-5"><div className="bg-emerald-50 border border-emerald-100 rounded-xl p-4"><p className="text-xs font-bold text-emerald-700">TERENDAH</p><p className="text-xl font-extrabold text-emerald-700">{formatCurrency(sewaMetrics.rentPrice.terendah)}</p></div><div className="bg-blue-50 border border-blue-100 rounded-xl p-4"><p className="text-xs font-bold text-blue-700">TERTINGGI</p><p className="text-xl font-extrabold text-blue-700">{formatCurrency(sewaMetrics.rentPrice.tertinggi)}</p></div></div>
+                <div className="space-y-3">
+                  {Object.entries(sewaMetrics.avgRent).map(([label,value]) => <div key={label} className="flex items-center justify-between border-b last:border-b-0 pb-2"><span className="text-sm font-semibold text-slate-600">Rata-rata {label}</span><span className="font-extrabold text-slate-800">{formatCurrency(value)}</span></div>)}
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      };
+
       const renderAiTab = () => (
         <div className="glass-card p-6 rounded-2xl space-y-6 animate-fade-in max-w-4xl mx-auto">
           <div>
@@ -1221,6 +1411,7 @@ const finalPicRows = picRows;
               <button onClick={() => setActiveTab('pku')} className={`px-4 py-2 rounded-xl text-xs font-bold transition ${activeTab === 'pku' ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-100'}`}>🎓 Divisi PKU</button>
               <button onClick={() => setActiveTab('it')} className={`px-4 py-2 rounded-xl text-xs font-bold transition ${activeTab === 'it' ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-100'}`}>💻 Divisi IT (SDO)</button>
               <button onClick={() => setActiveTab('lpj')} className={`px-4 py-2 rounded-xl text-xs font-bold transition ${activeTab === 'lpj' ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-100'}`}>📁 LPJ</button>
+              <button onClick={() => setActiveTab('sewa')} className={`px-4 py-2 rounded-xl text-xs font-bold transition ${activeTab === 'sewa' ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-100'}`}>🏢 SEWA & ASET</button>
               <button onClick={() => setActiveTab('ai')} className={`px-4 py-2 rounded-xl text-xs font-bold transition ${activeTab === 'ai' ? 'bg-purple-600 text-white shadow-sm' : 'purple-600 hover:bg-purple-50'}`}>🤖 AI Insights</button>
             </div>
           </div>
@@ -1234,7 +1425,7 @@ const finalPicRows = picRows;
             )}
             {dataSourceMode === 'dynamic' && !Object.values(data).some(rows => Array.isArray(rows) && rows.length > 0) && !isLoading && (
               <div className="mb-6 p-4 bg-red-50 border border-red-200 text-red-800 text-sm rounded-xl">
-                <strong>Data Live belum tersedia.</strong> Pastikan Google Sheets dapat diakses oleh publik/link sharing dan nama tab sesuai: PPI, ANGGARAN PPI, PKU, ANGGARAN PKU, SDO (atau SURVEY SDO), dan LPJ.
+                <strong>Data Live belum tersedia.</strong> Pastikan Google Sheets dapat diakses oleh publik/link sharing dan nama tab sesuai: PPI, ANGGARAN PPI, PKU, ANGGARAN PKU, SDO (atau SURVEY SDO), LPJ, dan SEWA.
               </div>
             )}
             {activeTab === 'overview' && renderOverview()}
@@ -1242,11 +1433,12 @@ const finalPicRows = picRows;
             {activeTab === 'pku' && renderPkuTab()}
             {activeTab === 'it' && renderItTab()}
             {activeTab === 'lpj' && renderLpjTab()}
+            {activeTab === 'sewa' && renderSewaTab()}
             {activeTab === 'ai' && renderAiTab()}
           </main>
 
           <footer className="bg-white border-t border-slate-200 py-4 text-center text-xs text-slate-400">
-            Dashboard ESH IMY V.2 • Mode: {dataSourceMode === 'static' ? 'Statis (Mock Data)' : 'Dinamis (Live Google Sheets)'} • {lastUpdated}
+            Dashboard MSU WEB V.2 • Mode: {dataSourceMode === 'static' ? 'Statis (Mock Data)' : 'Dinamis (Live Google Sheets)'} • {lastUpdated}
           </footer>
         </div>
       );
