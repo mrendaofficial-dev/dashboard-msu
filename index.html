@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Dashboard MSU WEB V.2</title>
+  <title>Dashboard MSU WEB V.2 - Executive SDO</title>
 
   <!-- Tailwind CSS -->
   <script src="https://cdn.tailwindcss.com"></script>
@@ -307,7 +307,7 @@
           LPJ: fetchSheet('LPJ'),
           // Sheet SEWA memiliki beberapa blok dengan header berbeda, sehingga dibaca per blok.
           SEWA_OWNERSHIP: fetchSheet('SEWA', 'A2:B5'),
-          SEWA_MOTOR_POSITION: fetchSheet('SEWA', 'A7:B11'),
+          SEWA_MOTOR_POSITION: fetchSheet('SEWA', 'A7:B11', false),
           SEWA_MOTOR_RENT: fetchSheet('SEWA', 'A14:M17'),
           SEWA_OFFICE_RENT: fetchSheet('SEWA', 'A20:M22'),
           SEWA_RENT_PRICE: fetchSheet('SEWA', 'A25:B26', false),
@@ -507,8 +507,10 @@
 
         const motorPosition = { cabang: 0, mekaar: 0, ulamm: 0, pic: 0 };
         (data.SEWA_MOTOR_POSITION || []).forEach(row => {
-          const label = rowLabel(row);
-          if (label in motorPosition) motorPosition[label] = rowValue(row);
+          // Blok posisi motor tidak memiliki header pada baris 7; dibaca sebagai raw CSV.
+          const label = normalize(Array.isArray(row) ? row[0] : row?.[firstKey(row)]);
+          const value = parseNum(Array.isArray(row) ? row[1] : row?.[secondKey(row)]);
+          if (label in motorPosition) motorPosition[label] = value;
         });
 
         const latestMonth = (rows, targetLabels) => {
