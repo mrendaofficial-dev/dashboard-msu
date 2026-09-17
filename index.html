@@ -219,7 +219,7 @@
       const [dataSourceMode, setDataSourceMode] = useState('dynamic'); 
       const [isLoading, setIsLoading] = useState(false);
       const [lastUpdated, setLastUpdated] = useState(new Date().toLocaleTimeString('id-ID'));
-      const [data, setData] = useState({ PPI: [], ANGGARAN_PPI: [], ANGGARAN_PPI_SUMMARY: [], PKU: [], ANGGARAN_PKU: [], SURVEY_SDO: [], LPJ: [], SEWA_OWNERSHIP: [], SEWA_MOTOR_POSITION: [], SEWA_MOTOR_RENT: [], SEWA_OFFICE_RENT: [], SEWA_RENT_PRICE: [], SEWA_AVG_RENT: [] });
+      const [data, setData] = useState({ PPI: [], ANGGARAN_PPI: [], ANGGARAN_PPI_SUMMARY: [], PKU: [], ANGGARAN_PKU: [], SURVEY_SDO: [], LPJ: [], SEWA_OWNERSHIP: [], SEWA_MOTOR_POSITION: [], SEWA_MOTOR_RENT: [], SEWA_OFFICE_RENT: [], SEWA_RENT_PRICE: [], SEWA_AVG_RENT: [], SEWA_HP_RENT: [], SEWA_HP_POSITION: [], SEWA_LAPTOP_RENT: [], SEWA_LAPTOP_POSITION: [] });
       const [apiKey, setApiKey] = useState('');
       const [aiResponse, setAiResponse] = useState('');
       const [isAiLoading, setIsAiLoading] = useState(false);
@@ -311,7 +311,13 @@
           SEWA_MOTOR_RENT: fetchSheet('SEWA', 'A14:M17'),
           SEWA_OFFICE_RENT: fetchSheet('SEWA', 'A20:M22'),
           SEWA_RENT_PRICE: fetchSheet('SEWA', 'A25:B26', false),
-          SEWA_AVG_RENT: fetchSheet('SEWA', 'A28:B31', false)
+          SEWA_AVG_RENT: fetchSheet('SEWA', 'A28:B31', false),
+          // Data tambahan perangkat: HP
+          SEWA_HP_RENT: fetchSheet('SEWA', 'A34:M37'),
+          SEWA_HP_POSITION: fetchSheet('SEWA', 'A40:B42', false),
+          // Data tambahan perangkat: Laptop
+          SEWA_LAPTOP_RENT: fetchSheet('SEWA', 'A45:M48'),
+          SEWA_LAPTOP_POSITION: fetchSheet('SEWA', 'A51:B53', false)
         };
 
         const results = await Promise.allSettled(Object.entries(sheetTasks).map(async ([key, promise]) => [key, await promise]));
@@ -562,6 +568,34 @@
           else if (label === 'sewa+') avgRent['SEWA+'] = value;
         });
 
+        const getPositionData = (rows, labels) => {
+          const result = {};
+          labels.forEach(label => result[label] = 0);
+          (rows || []).forEach(row => {
+            const label = normalize(row?.[0]);
+            const value = parseNum(row?.[1]);
+            if (label in result) result[label] = value;
+          });
+          return result;
+        };
+
+        const hpPosition = getPositionData(data.SEWA_HP_POSITION, ['ulamm', 'mekaar', 'cabang']);
+        const laptopPosition = getPositionData(data.SEWA_LAPTOP_POSITION, ['ulamm', 'mekaar', 'cabang']);
+
+        const hpRows = data.SEWA_HP_RENT || [];
+        const hpMonthIndex = latestMonth(hpRows, ['ulamm', 'mekaar', 'cabang']);
+        const hpMonth = hpMonthIndex >= 0 ? MONTH_LIST[hpMonthIndex] : '-';
+
+        const laptopRows = data.SEWA_LAPTOP_RENT || [];
+        const laptopMonthIndex = latestMonth(laptopRows, ['ulamm', 'mekaar', 'cabang']);
+        const laptopMonth = laptopMonthIndex >= 0 ? MONTH_LIST[laptopMonthIndex] : '-';
+
+        const deviceTrend = (rows, monthIndex) => ({
+          ulamm: valueAtMonth(rows, ['ulamm'], monthIndex),
+          mekaar: valueAtMonth(rows, ['mekaar'], monthIndex),
+          cabang: valueAtMonth(rows, ['cabang'], monthIndex)
+        });
+
         return {
           ownership,
           totalOwnership: ownership.MNM + ownership.SEWA + ownership['SEWA+'],
@@ -575,9 +609,15 @@
           officeAkadBaru,
           officeBelumAkad: Math.max(officeAkanHabis - officeAkadBaru, 0),
           rentPrice,
-          avgRent
+          avgRent,
+          hpPosition,
+          hpMonth,
+          hpTrend: deviceTrend(hpRows, hpMonthIndex),
+          laptopPosition,
+          laptopMonth,
+          laptopTrend: deviceTrend(laptopRows, laptopMonthIndex)
         };
-      }, [data.SEWA_OWNERSHIP, data.SEWA_MOTOR_POSITION, data.SEWA_MOTOR_RENT, data.SEWA_OFFICE_RENT, data.SEWA_RENT_PRICE, data.SEWA_AVG_RENT]);
+      }, [data.SEWA_OWNERSHIP, data.SEWA_MOTOR_POSITION, data.SEWA_MOTOR_RENT, data.SEWA_OFFICE_RENT, data.SEWA_RENT_PRICE, data.SEWA_AVG_RENT, data.SEWA_HP_RENT, data.SEWA_HP_POSITION, data.SEWA_LAPTOP_RENT, data.SEWA_LAPTOP_POSITION]);
 
       const generateAiInsights = async () => {
         setIsAiLoading(true);
@@ -1329,6 +1369,77 @@ const finalPicRows = picRows;
               <div className="h-72 relative"><ChartCanvas config={motorTrendConfig} /></div>
             </div>
 
+            {/* Perangkat tambahan: HP & Laptop */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              <div className="glass-card p-6 rounded-2xl shadow-sm">
+                <div className="flex items-center justify-between mb-4">
+                  <div>
+                    <h3 className="text-lg font-bold text-slate-800">📱 Data HP</h3>
+                    <p className="text-xs text-slate-500 mt-1">Masa habis sewa dan posisi HP.</p>
+                  </div>
+                  <span className="text-xs font-bold bg-blue-50 text-blue-700 px-3 py-1.5 rounded-full">Update: {sewaMetrics.hpMonth}</span>
+                </div>
+                <div className="grid grid-cols-3 gap-3 mb-5">
+                  {[
+                    ['ULAMM', sewaMetrics.hpPosition.ulamm],
+                    ['MEKAAR', sewaMetrics.hpPosition.mekaar],
+                    ['CABANG', sewaMetrics.hpPosition.cabang]
+                  ].map(([label, value]) => (
+                    <div key={label} className="bg-slate-50 border rounded-xl p-3 text-center">
+                      <p className="text-[11px] font-bold text-slate-400">{label}</p>
+                      <p className="text-2xl font-extrabold text-slate-800 mt-1">{formatNum(value)}</p>
+                    </div>
+                  ))}
+                </div>
+                <div className="grid grid-cols-3 gap-3">
+                  {[
+                    ['ULAMM', sewaMetrics.hpTrend.ulamm, 'text-blue-700'],
+                    ['MEKAAR', sewaMetrics.hpTrend.mekaar, 'text-emerald-700'],
+                    ['CABANG', sewaMetrics.hpTrend.cabang, 'text-amber-700']
+                  ].map(([label, value, color]) => (
+                    <div key={label} className="border rounded-xl p-3">
+                      <p className="text-[11px] font-bold text-slate-400">AKAN/HABIS — {label}</p>
+                      <p className={`text-xl font-extrabold ${color} mt-1`}>{formatNum(value)}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="glass-card p-6 rounded-2xl shadow-sm">
+                <div className="flex items-center justify-between mb-4">
+                  <div>
+                    <h3 className="text-lg font-bold text-slate-800">💻 Data Laptop</h3>
+                    <p className="text-xs text-slate-500 mt-1">Masa habis sewa dan posisi laptop.</p>
+                  </div>
+                  <span className="text-xs font-bold bg-indigo-50 text-indigo-700 px-3 py-1.5 rounded-full">Update: {sewaMetrics.laptopMonth}</span>
+                </div>
+                <div className="grid grid-cols-3 gap-3 mb-5">
+                  {[
+                    ['ULAMM', sewaMetrics.laptopPosition.ulamm],
+                    ['MEKAAR', sewaMetrics.laptopPosition.mekaar],
+                    ['CABANG', sewaMetrics.laptopPosition.cabang]
+                  ].map(([label, value]) => (
+                    <div key={label} className="bg-slate-50 border rounded-xl p-3 text-center">
+                      <p className="text-[11px] font-bold text-slate-400">{label}</p>
+                      <p className="text-2xl font-extrabold text-slate-800 mt-1">{formatNum(value)}</p>
+                    </div>
+                  ))}
+                </div>
+                <div className="grid grid-cols-3 gap-3">
+                  {[
+                    ['ULAMM', sewaMetrics.laptopTrend.ulamm, 'text-blue-700'],
+                    ['MEKAAR', sewaMetrics.laptopTrend.mekaar, 'text-emerald-700'],
+                    ['CABANG', sewaMetrics.laptopTrend.cabang, 'text-amber-700']
+                  ].map(([label, value, color]) => (
+                    <div key={label} className="border rounded-xl p-3">
+                      <p className="text-[11px] font-bold text-slate-400">AKAN/HABIS — {label}</p>
+                      <p className={`text-xl font-extrabold ${color} mt-1`}>{formatNum(value)}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
               <div className="glass-card p-6 rounded-2xl shadow-sm">
                 <h3 className="text-lg font-bold text-slate-800 mb-4">👥 Posisi Motor</h3>
@@ -1440,7 +1551,7 @@ const finalPicRows = picRows;
           </main>
 
           <footer className="bg-white border-t border-slate-200 py-4 text-center text-xs text-slate-400">
-            Dashboard ESH-IMY WEB V.2 • Mode: {dataSourceMode === 'static' ? 'Statis (Mock Data)' : 'Dinamis (Live Google Sheets)'} • {lastUpdated}
+            Dashboard MSU WEB V.2 • Mode: {dataSourceMode === 'static' ? 'Statis (Mock Data)' : 'Dinamis (Live Google Sheets)'} • {lastUpdated}
           </footer>
         </div>
       );
